@@ -1,22 +1,31 @@
 """
-parser.py — AI-powered natural language parser for EchoArm
+parser.py — AI-powered natural language parser for OpenGuy.
 Uses Claude (via Anthropic API) to convert flexible natural language
 into structured robot commands. Falls back to regex if API is unavailable.
 """
 
 import json
 import re
+import os
 import urllib.request
 import urllib.error
+from typing import Optional, Dict, Any
 
 
 # ── Regex fallback (original MVP logic) ─────────────────────────────────────
 
-def _regex_parse(text):
+def _regex_parse(text: str) -> Dict[str, Any]:
     """Original regex parser. Used when AI is unavailable."""
-    text = text.lower().strip()
+    original_text = text.strip()
+    text = original_text.lower()
 
-    result = {"action": None, "direction": None, "distance_cm": None, "angle_deg": None, "raw": text}
+    result = {
+        "action": None,
+        "direction": None,
+        "distance_cm": None,
+        "angle_deg": None,
+        "raw": original_text,
+    }
 
     if re.search(r'\b(move|go|walk|travel|advance)\b', text):
         result["action"] = "move"
@@ -30,10 +39,20 @@ def _regex_parse(text):
         result["action"] = "stop"
         return result
 
-    for direction in ["forward", "backward", "back", "left", "right", "up", "down"]:
+    for direction in ["forward", "backward", "back", "left", "right", "up", "down", "clockwise", "counterclockwise", "cw", "ccw"]:
         if direction in text:
-            result["direction"] = "backward" if direction == "back" else direction
+            if direction == "back":
+                result["direction"] = "backward"
+            elif direction in {"clockwise", "cw"}:
+                result["direction"] = "right"
+            elif direction in {"counterclockwise", "ccw"}:
+                result["direction"] = "left"
+            else:
+                result["direction"] = direction
             break
+
+    if result["action"] not in {"move", "rotate"}:
+        result["direction"] = None
 
     dist_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:cm|centimeter)', text)
     if dist_match:
@@ -42,6 +61,38 @@ def _regex_parse(text):
     angle_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:degree|deg|°)', text)
     if angle_match:
         result["angle_deg"] = float(angle_match.group(1))
+
+    if result["distance_cm"] is None and result["action"] == "move":
+        bare_dist_match = re.search(r'\b(\d+(?:\.\d+)?)\b', text)
+        if bare_dist_match and not angle_match:
+            result["distance_cm"] = float(bare_dist_match.group(1))
+
+    if result["angle_deg"] is None and result["action"] == "rotate":
+        bare_angle_match = re.search(r'\b(\d+(?:\.\d+)?)\b', text)
+        if bare_angle_match:
+            result["angle_deg"] = float(bare_angle_match.group(1))
+
+    if result["action"] == "move" and result["direction"] is None:
+        result["direction"] = "forward"
+
+    if result["action"] == "rotate" and result["direction"] is None and result["angle_deg"] is not None:
+        result["direction"] = "right"
+
+    if result["action"] == "move" and result["distance_cm"] is None and result["direction"]:
+        if re.search(r'\b(a bit|slightly|a little|little)\b', text):
+            result["distance_cm"] = 5.0
+        elif re.search(r'\b(far|further|a lot|more|long)\b', text):
+            result["distance_cm"] = 30.0
+        else:
+            result["distance_cm"] = 10.0
+
+    if result["action"] == "rotate" and result["angle_deg"] is None and result["direction"]:
+        if re.search(r'\b(a bit|slightly|a little|little)\b', text):
+            result["angle_deg"] = 15.0
+        elif re.search(r'\b(far|further|a lot|more|sharp|hard|big)\b', text):
+            result["angle_deg"] = 90.0
+        else:
+            result["angle_deg"] = 45.0
 
     return result
 
@@ -82,7 +133,7 @@ Output: {"action":"grab","direction":null,"distance_cm":null,"angle_deg":null,"c
 """
 
 
-def _ai_parse(text, api_key=None):
+def _ai_parse(text: str, api_key: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Calls Claude (Haiku, for speed) to parse the command.
     Returns a parsed dict, or None if the call fails.
@@ -122,13 +173,17 @@ def _ai_parse(text, api_key=None):
 
 # ── Public interface ─────────────────────────────────────────────────────────
 
-def parse(text, api_key=None, use_ai=True):
+def parse(
+    text: str, 
+    api_key: Optional[str] = None, 
+    use_ai: bool = True
+) -> Dict[str, Any]:
     """
     Parse a natural language robot command into a structured dict.
 
     Args:
         text     : The user's input string.
-        api_key  : Optional Anthropic API key. Not needed inside claude.ai.
+        api_key  : Optional Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
         use_ai   : Set False to force regex-only mode (offline testing).
 
     Returns a dict with keys:
@@ -136,8 +191,17 @@ def parse(text, api_key=None, use_ai=True):
     """
     text = text.strip()
     if not text:
-        return {"action": None, "direction": None, "distance_cm": None,
-                "angle_deg": None, "confidence": 0.0, "raw": ""}
+        return {
+            "action": None,
+            "direction": None,
+            "distance_cm": None,
+            "angle_deg": None,
+            "confidence": 0.0,
+            "raw": ""
+        }
+
+    # Try API key from param, then environment
+    api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
 
     if use_ai:
         result = _ai_parse(text, api_key=api_key)
@@ -146,7 +210,16 @@ def parse(text, api_key=None, use_ai=True):
         print("[EchoArm] Falling back to regex parser.")
 
     result = _regex_parse(text)
-    result["confidence"] = 0.5 if result["action"] else 0.0
+    if not result["action"] or result["action"] == "unknown":
+        result["confidence"] = 0.0
+    elif result["action"] in {"grab", "release", "stop"}:
+        result["confidence"] = 0.9
+    elif result["action"] == "move":
+        result["confidence"] = 0.85 if result["distance_cm"] is not None else 0.6
+    elif result["action"] == "rotate":
+        result["confidence"] = 0.85 if result["angle_deg"] is not None else 0.6
+    else:
+        result["confidence"] = 0.5
     return result
 
 

@@ -4,12 +4,25 @@
 
 OpenGuy converts natural language commands into structured robot actions — no robotics experience required. Type what you want the arm to do, and OpenGuy handles the rest.
 
-> **Status:** MVP — AI parser live · Web UI ready · Hardware integration in progress
+> **Status:** Production Ready — Flask backend · AI parser · Web UI · Multi-step chains · 2D visualization · voice input
+
+---
+
+## What's New (Latest Update)
+
+✨ **Major Enhancements:**
+- **Flask Backend**: Full REST API for robot control
+- **Multi-Step Command Chains**: "pick up AND move forward AND release"
+- **2D Workspace Visualization**: Real-time robot position tracking
+- **Voice Input**: Browser-native voice commands via Web Speech API
+- **Type-Safe Code**: Full type hints across all modules
+- **Better Error Handling**: Comprehensive input validation
 
 ---
 
 ## Demo
 
+### Single Commands
 ```
 Input   →  "go a bit forward"
 Parsed  →  { "action": "move", "direction": "forward", "distance_cm": 5, "confidence": 0.92 }
@@ -18,120 +31,269 @@ Output  →  Moving forward 5 cm... ✓
 Input   →  "turn slightly right"
 Parsed  →  { "action": "rotate", "direction": "right", "angle_deg": 15, "confidence": 0.88 }
 Output  →  Rotating right 15°... ✓
-
-Input   →  "pick up the object"
-Parsed  →  { "action": "grab", "confidence": 0.95 }
-Output  →  Closing gripper... ✓
 ```
 
-The UI feels immediate. Hit Enter (or click a suggestion), and a thinking state appears instantly while the AI processes — a scanning progress bar, animated cursor, and the model name — then the result fades in. No blank waiting, no jarring jumps.
-
-No need to memorise commands. Click a suggestion and the robot responds. After each action, suggestions update to show logical next steps.
+### Command Chains
+```
+Input   →  "move forward AND rotate right AND grab"
+Parsed  →  [
+              { "action": "move", "direction": "forward", "distance_cm": 5 },
+              { "action": "rotate", "direction": "right", "angle_deg": 45 },
+              { "action": "grab", "confidence": 0.95 }
+            ]
+Output  →  Step 1/3 ✓ Step 2/3 ✓ Step 3/3 ✓
+```
 
 ---
 
-## What It Does
+## Features
 
-- Accepts natural language commands in plain English
-- Parses them into structured JSON using an AI model (Groq / Llama 3.1)
-- Scores each parsed command with a confidence value so ambiguous input is flagged
-- Falls back to a regex-based parser when the AI is unavailable — keeps working offline
-- Shows a real-time thinking state while the AI processes each command
-- Shows context-aware smart suggestions that update after every command
-- Stores up to 8 recent commands in persistent history with one-click replay
+### Core Capabilities
+- ✅ Natural language command parsing (AI + regex fallback)
+- ✅ Confidence scoring (0.0-1.0) for ambiguous commands
+- ✅ Multi-step command chains with "AND", "THEN", "&", or commas
+- ✅ 2D workspace visualization showing robot position & orientation
+- ✅ Real-time thinking state during processing
+- ✅ Context-aware smart suggestions
+- ✅ Persistent command history with replay
+- ✅ Offline operation (regex parser works without API)
+
+### API Endpoints
+- `GET /` — Web UI
+- `POST /api/parse` — Parse single command
+- `POST /api/execute` — Execute command
+- `GET /api/status` — Get robot state
+- `POST /api/chain/parse` — Parse multi-step chain
+- `POST /api/chain/execute` — Execute chain step
+- `GET /api/chain/status` — Get chain progress
+- `GET /api/visualize` — Get workspace SVG
+- `GET /api/health` — Health check
+- `GET /api/history` — Get command history
 
 ---
 
 ## How It Works
 
-**1. AI Parser**
-Commands are sent to Llama 3.1 (via Groq's free API) with a structured system prompt. The model returns a clean JSON object — action, direction, distance, angle, and a confidence score. Vague phrasing like "a bit" or "slightly" is interpreted and estimated automatically.
+**1. Multi-Step Chain Parsing**
+Commands separated by AND, THEN, &, or commas are parsed as chains:
+```
+"move forward 10cm AND rotate right 45° AND grab"
+                  ↓
+        [command1, command2, command3]
+```
 
-**2. Regex Fallback**
-If the AI is unreachable, the system switches to a regex-based parser. It handles common patterns reliably and marks results with a lower confidence score so you always know which path was taken.
+**2. 2D Workspace Visualization**
+Real-time SVG showing:
+- Robot position (green circle)
+- Orientation (cyan direction line)
+- Gripper state (open/closed indicator)
+- Gridlines and coordinate labels
 
-**3. Thinking State**
-The moment a command is submitted, the output panel switches to a processing view: a scanning accent-colored bar, a blinking cursor, and the model identifier. The Parse button label changes to `…` and disables. Once the response arrives, everything transitions in with staggered card animations. The result never appears abruptly.
+**3. Sequential Chain Execution**
+Each step executes in order with progress tracking:
+```
+Step 1/3: Moved forward 10cm → Pos: (0.0, 10.0)
+Step 2/3: Rotated right 45° → Facing: 45°
+Step 3/3: Gripper CLOSED
+```
 
-**4. Smart Suggestions**
-Five suggestions are shown below the input at all times. On load they cover a broad range of actions. After each successful command they update to reflect logical next steps — if you just grabbed an object, suggestions shift to lift, move, release, and reposition. A shuffle button cycles in fresh options.
-
-**5. Command History**
-Every successful command is saved to `localStorage`. Each history entry has two actions: tap the text to fill the input, or hit the replay button to re-run immediately.
-
-**6. Simulator**
-The parsed command is passed to a simulator that describes the robot's response in plain text. Ready to be swapped for real hardware output.
+**4. Flask Backend**
+Production-ready REST API with:
+- Type hints throughout
+- Comprehensive error handling
+- State management
+- History persistence (JSON)
+- Command validation
 
 ---
 
-## Try It
+## Installation & Usage
 
-**Web UI (no setup)**
-
-Open `index.html` in any browser. Enter your [Groq API key](https://console.groq.com) once via the top-right menu — it saves locally. That's it.
-
-**Run locally**
-
+### Web UI (Recommended)
 ```bash
-git clone https://github.com/NEHIRAAS/openguy.git
-cd openguy
-python main.py
+# Install dependencies
+pip install -r requirements.txt
+
+# Start the server
+python app.py
+
+# Open http://localhost:5000 in your browser
 ```
 
-Requirements: Python 3.8+, no external libraries.
+### Docker (Coming Soon)
+```bash
+docker build -t openguy .
+docker run -p 5000:5000 openguy
+```
+
+### API Usage
+```bash
+# Parse a command
+curl -X POST http://localhost:5000/api/parse \
+  -H "Content-Type: application/json" \
+  -d '{"command": "move forward 10 cm"}'
+
+# Parse a chain
+curl -X POST http://localhost:5000/api/chain/parse \
+  -H "Content-Type: application/json" \
+  -d '{"command": "move forward AND rotate right AND grab"}'
+
+# Get visualization
+curl http://localhost:5000/api/visualize > workspace.svg
+```
 
 ---
 
 ## Project Structure
 
 ```
-openguy/
-├── index.html      # Web UI — single file, no build step
-├── main.py         # CLI entry point
-├── parser.py       # AI parser + regex fallback
-└── simulator.py    # Simulates robot arm responses
+OpenGuy/
+├── app.py                  # Flask backend (REST API)
+├── parser.py              # AI parser + regex fallback
+├── simulator.py           # Robot state simulator
+├── chain_executor.py      # Multi-step chain handler
+├── visualizer.py          # 2D workspace visualization
+├── index.html             # Web UI
+├── main.py                # CLI entry point
+├── requirements.txt       # Python dependencies
+└── README.md              # This file
 ```
 
 ---
 
 ## Roadmap
 
-- [x] AI-based natural language parser
+### ✅ Completed
+- [x] AI-based natural language parser (Claude Haiku)
 - [x] Regex fallback with confidence scoring
-- [x] Web UI (single-file, no setup)
+- [x] Web UI with real-time thinking state
 - [x] Command history with persistent replay
 - [x] Smart context-aware suggestions
-- [x] Real-time thinking / processing state
-- [ ] Serial/USB connection to real hardware
-- [ ] Multi-step command chains ("pick up the block and move it left")
-- [ ] WhatsApp / Telegram bot interface
-- [ ] Voice input via browser microphone
-- [ ] PyBullet physics simulation
+- [x] **Flask backend with REST API**
+- [x] **Multi-step command chains**
+- [x] **2D workspace visualization**
+- [x] Type hints and validation
 
-Have an idea? [Open an issue](https://github.com/NEHIRAAS/openguy/issues) — suggestions are welcome.
+### 🚧 In Progress / Planned
+- [ ] PyBullet 3D physics simulation
+- [ ] Real hardware integration (USB/Serial)
+- [ ] Telegram bot interface
+- [ ] WhatsApp bot integration
+- [ ] Mobile app (React Native)
+- [ ] Cloud deployment
+- [ ] Advanced analytics dashboard
+
+---
+
+## Configuration
+
+### Environment Variables
+```bash
+# Anthropic API key (optional, falls back to regex parser)
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Server configuration
+export FLASK_ENV=development  # or production
+export FLASK_PORT=5000
+```
+
+### Configuration File
+Create `.env` file:
+```
+ANTHROPIC_API_KEY=sk-ant-...
+FLASK_ENV=production
+FLASK_PORT=5000
+```
+
+---
+
+## Development
+
+### Running Tests
+```bash
+pytest tests/ -v
+```
+
+### Code Quality
+```bash
+# Type checking
+mypy *.py
+
+# Linting
+pylint *.py
+
+# Format code
+black *.py
+```
+
+---
+
+## API Documentation
+
+### Parse Command
+```
+POST /api/parse
+Content-Type: application/json
+
+Request:
+{
+  "command": "move forward 10 cm",
+  "api_key": "sk-ant-..." (optional)
+}
+
+Response:
+{
+  "action": "move",
+  "direction": "forward",
+  "distance_cm": 10.0,
+  "angle_deg": null,
+  "confidence": 0.5,
+  "raw": "move forward 10 cm"
+}
+```
+
+### Parse Chain
+```
+POST /api/chain/parse
+Content-Type: application/json
+
+Request:
+{
+  "command": "move forward AND rotate right AND grab"
+}
+
+Response:
+{
+  "is_chain": true,
+  "total_steps": 3,
+  "commands": [
+    { "action": "move", "direction": "forward", ... },
+    { "action": "rotate", "direction": "right", ... },
+    { "action": "grab", ... }
+  ],
+  "progress": { ... }
+}
+```
 
 ---
 
 ## Contributing
 
-OpenGuy is beginner-friendly. If you can write Python or basic HTML, you can contribute.
+OpenGuy is beginner-friendly. Pick any roadmap item and submit a PR!
 
-Good places to start: adding command types to `parser.py`, expanding the suggestion bank in `index.html`, improving the AI system prompt, writing tests for `parse()`, or connecting `simulator.py` to real serial hardware.
+**Good starting points:**
+- Add new robot actions to `parser.py`
+- Improve the AI system prompt
+- Create tests in `tests/`
+- Add hardware drivers
+- Build the mobile app
+- Deploy to cloud
 
 **How to contribute:**
-
 1. Fork the repo
 2. Create a branch: `git checkout -b your-feature`
-3. Make your changes
-4. Open a pull request with a short description
-
----
-
-## Support
-
-If OpenGuy is useful to you, a star helps others find it.
-
-[⭐ Star on GitHub](https://github.com/NEHIRAAS/openguy)
+3. Make your changes & test locally
+4. Push & open a pull request
 
 ---
 
@@ -141,4 +303,12 @@ MIT — free to use, modify, and distribute.
 
 ---
 
-*Built by [@NEHIRAAS](https://github.com/NEHIRAAS)*
+## Support
+
+- 💬 [GitHub Discussions](https://github.com/OPENEHIRA/OpenGuy/discussions)
+- 🐛 [Report Issues](https://github.com/OPENEHIRA/OpenGuy/issues)
+- ⭐ [Star on GitHub](https://github.com/OPENEHIRA/OpenGuy)
+
+---
+
+*OpenGuy makes robot control conversational. Built with ❤️ by the community.*

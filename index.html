@@ -392,6 +392,7 @@ nav {
       <input class="cmd-in" id="cmdIn" type="text"
         placeholder="Describe what you want the robot to do…"
         autocomplete="off" spellcheck="false"/>
+      <button class="cmd-go" id="voiceBtn" onclick="toggleVoice()" title="Voice input (click to speak)">🎤</button>
       <button class="cmd-go" id="goBtn" onclick="go()">Parse</button>
     </div>
   </div>
@@ -431,12 +432,14 @@ nav {
 </div>
 
 <script>
-const GROQ = 'https://api.groq.com/openai/v1/chat/completions';
-const MDL  = 'llama-3.1-8b-instant';
-const SYS  = `You are the command parser for a robot arm called OpenGuy.
-Return ONLY a raw JSON object — no markdown, no explanation, no backticks.
-Schema: { "action":"move"|"rotate"|"grab"|"release"|"stop"|"unknown", "direction":"forward"|"backward"|"left"|"right"|"up"|"down"|null, "distance_cm":number|null, "angle_deg":number|null, "confidence":number 0-1, "raw":string }
-Estimates: "a bit"=5cm/15°, "slightly"=3cm/10°, "far"=30cm/90°. Never return anything except the JSON.`;
+// Flask API Endpoints
+const API_PARSE = '/api/parse';
+const API_EXECUTE = '/api/execute';
+const API_STATUS = '/api/status';
+const API_CHAIN_PARSE = '/api/chain/parse';
+const API_CHAIN_EXECUTE = '/api/chain/execute';
+const API_CHAIN_STATUS = '/api/chain/status';
+const API_CHAIN_RESET = '/api/chain/reset';
 
 // ── Suggestion bank ───────────────────────────────────────────────────────
 // Each key is a last-action context. 'default' shown on load.
@@ -541,6 +544,9 @@ let hist = (() => {
   catch { return []; }
 })();
 
+// Declared here to avoid "cannot access before initialization" error
+const REPLAY_ICON = `<svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/></svg>`;
+
 if (apiKey) document.getElementById('apiField').value = apiKey;
 renderHist();
 renderSuggestions('default');
@@ -576,46 +582,85 @@ function colorJson(o) {
     .replace(/:\s*(null)/g,     ': <span class="jnu">null</span>');
 }
 
-function sim(cmd) {
-  const { action:a, direction:d='forward', distance_cm:dc, angle_deg:ad } = cmd;
-  if (a==='move')    return [{i:'🔄',m:`Computing trajectory — <em>${d}</em>, <em>${dc??5} cm</em>`},{i:'⚙️',m:`Motor controllers engaged`},{i:'✅',m:`Arm moved <em>${d}</em> <em>${dc??5} cm</em>`}];
-  if (a==='rotate')  return [{i:'🔄',m:`Calculating rotation — <em>${d}</em>, <em>${ad??15}°</em>`},{i:'⚙️',m:`Servo drive engaged`},{i:'✅',m:`Rotated <em>${d}</em> <em>${ad??15}°</em>`}];
-  if (a==='grab')    return [{i:'🔄',m:`Grip sequence initiated`},{i:'⚙️',m:`Force applied — 40%`},{i:'✅',m:`Object gripped`}];
-  if (a==='release') return [{i:'🔄',m:`Release sequence initiated`},{i:'✅',m:`Gripper opened`}];
-  if (a==='stop')    return [{i:'🛑',m:`E-stop broadcast`},{i:'✅',m:`All actuators halted`}];
-  return [{i:'❌',m:`Command not recognised`}];
-}
-
 function confBadge(c) {
   if (c>=0.8) return `<span class="pill p-green">HIGH</span>`;
   if (c>=0.5) return `<span class="pill p-cyan">MED</span>`;
   return `<span class="pill p-dim">LOW</span>`;
 }
 
-// ── Groq API ──────────────────────────────────────────────────────────────
-async function callGroq(text) {
+// ── Flask API ──────────────────────────────────────────────────────────────
+async function callParse(text) {
   const key = document.getElementById('apiField').value.trim() || apiKey;
-  if (!key) throw new Error('Enter your Groq API key (top-right) to continue.');
-  const r = await fetch(GROQ, {
-    method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},
-    body: JSON.stringify({ model:MDL, messages:[{role:'system',content:SYS},{role:'user',content:text}], max_tokens:256, temperature:0.1 })
+  const r = await fetch(API_PARSE, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command: text, api_key: key })
   });
-  if (!r.ok) { const e=await r.json().catch(()=>({})); throw new Error(e.error?.message||`Error ${r.status}`); }
-  const j = await r.json();
-  return JSON.parse(j.choices[0].message.content.trim().replace(/```json|```/g,'').trim());
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || `Error ${r.status}`);
+  }
+  return await r.json();
+}
+
+async function callExecute(parsed) {
+  const r = await fetch(API_EXECUTE, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(parsed)
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || `Error ${r.status}`);
+  }
+  return await r.json();
+}
+
+async function callChainParse(text) {
+  const r = await fetch(API_CHAIN_PARSE, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command: text })
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || `Error ${r.status}`);
+  }
+  return await r.json();
+}
+
+async function callChainExecute(cmd) {
+  const r = await fetch(API_CHAIN_EXECUTE, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cmd)
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || `Error ${r.status}`);
+  }
+  return await r.json();
 }
 
 // ── Render output ─────────────────────────────────────────────────────────
-function renderResult(cmd) {
-  const c = cmd.confidence ?? 0, pct = Math.round(c*100), sl = sim(cmd);
+function renderResult(cmd, execResult) {
+  const c = cmd.confidence ?? 0, pct = Math.round(c*100);
+  const lines = execResult?.output || [];
+  const timestamp = Date.now(); // Cache-busting timestamp
+  
   return `<div class="cards">
     <div class="card" style="animation-delay:0s">
+      <div class="ch"><span class="clabel">Workspace</span><span class="pill p-cyan">2D VIEW</span></div>
+      <div class="cb" style="padding:0">
+        <object type="image/svg+xml" data="/api/visualize?t=${timestamp}" style="width:100%; height:auto; display:block; border-radius:8px; min-height:200px;"></object>
+      </div>
+    </div>
+    <div class="card" style="animation-delay:.05s">
       <div class="ch"><span class="clabel">Parsed command</span>${confBadge(c)}</div>
       <div class="cb"><div class="jv">${colorJson(cmd)}</div></div>
     </div>
-    <div class="card" style="animation-delay:.07s">
-      <div class="ch"><span class="clabel">Confidence</span><span class="pill p-dim">${MDL.split('-').slice(0,3).join('-')}</span></div>
+    <div class="card" style="animation-delay:.10s">
+      <div class="ch"><span class="clabel">Confidence</span><span class="pill p-dim">CLAUDE</span></div>
       <div class="cb">
         <div class="conf-wrap">
           <div class="conf-bar-row">
@@ -630,16 +675,43 @@ function renderResult(cmd) {
         </div>
       </div>
     </div>
-    <div class="card" style="animation-delay:.14s">
+    <div class="card" style="animation-delay:.15s">
       <div class="ch"><span class="clabel">Robot response</span><span class="pill p-cyan">SIMULATOR</span></div>
       <div class="cb">
         <div class="sim-rows">
-          ${sl.map(l=>`<div class="sim-row"><span class="si">${l.i}</span><span class="sm">${l.m}</span></div>`).join('')}
+          ${lines.map((l,i)=>`<div class="sim-row" style="animation-delay:${i*0.08}s"><span class="si">✓</span><span class="sm">${l}</span></div>`).join('')}
         </div>
       </div>
     </div>
   </div>`;
 }
+
+function renderChain(chainData) {
+  const total = chainData.total_steps;
+  const cmds = chainData.commands || [];
+  return `<div class="cards">
+    <div class="card">
+      <div class="ch"><span class="clabel">Command Chain</span><span class="pill p-green">${total} STEPS</span></div>
+      <div class="cb">
+        <div class="sim-rows">
+          ${cmds.map((c,i)=>`<div class="sim-row" style="animation-delay:${i*0.08}s">
+            <span class="si">${i+1}</span>
+            <span class="sm"><em>${c.action}</em> ${c.direction ? '→ '+c.direction : ''} ${c.distance_cm ? c.distance_cm + 'cm' : ''}</span>
+          </div>`).join('')}
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="cb" style="text-align:center; padding:24px">
+        <button class="cmd-go" onclick="executeChainSequence()" style="width:100%; margin-bottom:8px">Execute Chain</button>
+        <button class="sugg-chip" onclick="location.reload()" style="width:100%; padding:10px; border:1px solid var(--border)">Cancel</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// Global chain data
+let currentChain = null;
 
 // ── Main send ─────────────────────────────────────────────────────────────
 async function go(textOverride) {
@@ -658,23 +730,44 @@ async function go(textOverride) {
       <span class="thinking-icon">🦾</span>
       <div class="thinking-body">
         <span class="thinking-label">Processing</span>
-        <span class="thinking-text">Parsing command via Llama 3.1</span>
+        <span class="thinking-text">Parsing command via Claude</span>
         <div class="thinking-bar"><div class="thinking-fill"></div></div>
       </div>
     </div>`;
 
   try {
-    const cmd = await callGroq(text);
-    out.innerHTML = renderResult(cmd);
-    requestAnimationFrame(() => setTimeout(() => {
-      const f = document.getElementById('cFill');
-      if (f) f.style.width = `${Math.round((cmd.confidence??0)*100)}%`;
-    }, 60));
-
+    // Check if it's a chain (contains AND, THEN, &, commas multiple times)
+    const chainDelimiters = text.toLowerCase().match(/(?:\s+and\s+|\s+then\s+|\s*&\s*|,)/g);
+    const isChain = chainDelimiters && chainDelimiters.length > 0;
+    
+    if (isChain) {
+      // Parse as chain
+      const chainResult = await callChainParse(text);
+      if (chainResult.is_chain && chainResult.total_steps > 1) {
+        currentChain = chainResult;
+        out.innerHTML = renderChain(chainResult);
+        btn.disabled = false;
+        btn.textContent = 'Parse';
+        return;
+      }
+    }
+    
+    // Single command execution
+    const cmd = await callParse(text);
+    
     if (cmd.action && cmd.action !== 'unknown') {
+      const execResult = await callExecute(cmd);
+      out.innerHTML = renderResult(cmd, execResult);
+      
+      requestAnimationFrame(() => setTimeout(() => {
+        const f = document.getElementById('cFill');
+        if (f) f.style.width = `${Math.round((cmd.confidence??0)*100)}%`;
+      }, 60));
+      
       addToHist({ text, action: cmd.action, pct: Math.round((cmd.confidence??0)*100) });
-      // Rotate suggestions to match the new context
       renderSuggestions(cmd.action);
+    } else {
+      out.innerHTML = `<div class="err-box"><span>⚠</span><span>Could not parse command. Try being more specific.</span></div>`;
     }
   } catch(e) {
     out.innerHTML = `<div class="err-box"><span>⚠</span><span>${e.message}</span></div>`;
@@ -684,10 +777,50 @@ async function go(textOverride) {
   btn.textContent = 'Parse';
 }
 
-// ── History ───────────────────────────────────────────────────────────────
+async function executeChainSequence() {
+  if (!currentChain) return;
+  
+  const out = document.getElementById('out');
+  out.innerHTML = `
+    <div class="thinking">
+      <span class="thinking-icon">🦾</span>
+      <div class="thinking-body">
+        <span class="thinking-label">Executing Chain</span>
+        <span class="thinking-text">Step 1 of ${currentChain.total_steps}</span>
+        <div class="thinking-bar"><div class="thinking-fill"></div></div>
+      </div>
+    </div>`;
 
-// Declared here (above renderHist) to avoid "cannot access before initialization" error
-const REPLAY_ICON = `<svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/></svg>`;
+  try {
+    for (let i = 0; i < currentChain.commands.length; i++) {
+      const cmd = currentChain.commands[i];
+      const result = await callChainExecute(cmd);
+      
+      // Update progress
+      const progress = result.chain_progress;
+      out.innerHTML = `
+        <div class="thinking">
+          <span class="thinking-icon">🦾</span>
+          <div class="thinking-body">
+            <span class="thinking-label">Chain Progress</span>
+            <span class="thinking-text">Step ${i+1} of ${currentChain.total_steps}</span>
+            <div class="thinking-bar"><div class="thinking-fill" style="width:${progress.percentage}%"></div></div>
+          </div>
+        </div>`;
+      
+      // Show command result
+      await new Promise(resolve => setTimeout(resolve, 600));
+      
+      out.innerHTML += renderResult(cmd, result);
+    }
+    
+    currentChain = null;
+  } catch(e) {
+    out.innerHTML = `<div class="err-box"><span>⚠</span><span>${e.message}</span></div>`;
+  }
+}
+
+// ── History ───────────────────────────────────────────────────────────────
 
 function addToHist(entry) {
   hist = hist.filter(h => h.text !== entry.text);
@@ -703,14 +836,13 @@ function clearHist() {
   renderHist();
 }
 
-
 function renderHist() {
   const section = document.getElementById('histSection');
   const chips   = document.getElementById('histChips');
   if (!hist.length) { section.style.display = 'none'; return; }
   section.style.display = 'block';
   chips.innerHTML = hist.map((h, i) => {
-    const safe = h.text.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    const safe    = h.text.replace(/'/g, "\\'").replace(/"/g, '&quot;');
     return `<div class="hist-chip" style="animation-delay:${i * 0.04}s">
       <span class="hist-fill" onclick="fill('${safe}')" title="Fill input">${h.text}</span>
       <div class="hist-div"></div>
@@ -724,6 +856,96 @@ function renderHist() {
 // ── Keyboard ──────────────────────────────────────────────────────────────
 document.getElementById('cmdIn').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
 document.getElementById('apiField').addEventListener('keydown', e => { if (e.key === 'Enter') saveKey(); });
+
+// ── Voice Input ───────────────────────────────────────────────────────────
+
+let isListening = false;
+let recognition = null;
+
+function initVoice() {
+  // Check browser support
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    console.warn('[Voice] Web Speech API not supported in this browser');
+    document.getElementById('voiceBtn').style.display = 'none';
+    return false;
+  }
+  
+  recognition = new SpeechRecognition();
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.language = 'en-US';
+  
+  recognition.onstart = () => {
+    isListening = true;
+    const btn = document.getElementById('voiceBtn');
+    btn.textContent = '🎤 Listening...';
+    btn.style.backgroundColor = 'var(--accent)';
+    btn.style.color = '#090909';
+  };
+  
+  recognition.onresult = (event) => {
+    let transcript = '';
+    let interim = '';
+    
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const t = event.results[i][0].transcript;
+      if (event.results[i].isFinal) {
+        transcript += t + ' ';
+      } else {
+        interim += t;
+      }
+    }
+    
+    if (transcript) {
+      document.getElementById('cmdIn').value = transcript.trim();
+    }
+    
+    if (interim) {
+      document.getElementById('cmdIn').placeholder = interim;
+    }
+  };
+  
+  recognition.onerror = (event) => {
+    console.error('[Voice] Error:', event.error);
+    const btn = document.getElementById('voiceBtn');
+    btn.textContent = '🎤';
+    btn.style.backgroundColor = '';
+    btn.style.color = '';
+    isListening = false;
+  };
+  
+  recognition.onend = () => {
+    const btn = document.getElementById('voiceBtn');
+    btn.textContent = '🎤';
+    btn.style.backgroundColor = '';
+    btn.style.color = '';
+    isListening = false;
+  };
+  
+  return true;
+}
+
+function toggleVoice() {
+  if (!recognition) {
+    if (!initVoice()) {
+      alert('Web Speech API not supported in your browser. Try Chrome or Edge.');
+      return;
+    }
+  }
+  
+  if (isListening) {
+    recognition.stop();
+  } else {
+    document.getElementById('cmdIn').value = '';
+    recognition.start();
+  }
+}
+
+// Initialize voice on page load
+window.addEventListener('DOMContentLoaded', () => {
+  initVoice();
+});
 </script>
 </body>
 </html>
